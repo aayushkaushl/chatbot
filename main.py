@@ -51,7 +51,7 @@ def generate_answer(context, question):
     else:
         return f"Error: {response.status_code} - {response.text}"
 
-st.title("🔎 Blog Q&A with Gemini (Free API)")
+st.title(" Blog Q&A ")
 
 blog_url = st.text_input("Enter Blog URL")
 question = st.text_input("Ask a Question")
