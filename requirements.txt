@@ -1,0 +1,7 @@
+faiss-cpu
+langchain
+python-dotenv
+tqdm
+beautifulsoup4
+requests
+google-generativeai
