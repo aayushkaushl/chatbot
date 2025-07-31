@@ -1,7 +1,4 @@
-faiss-cpu
-langchain
-python-dotenv
-tqdm
+streamlit
 beautifulsoup4
 requests
-google-generativeai
+scikit-learn
