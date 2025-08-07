@@ -1,72 +1,105 @@
+from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader, CSVLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings import HuggingFaceEmbeddings
+from langchain.vectorstores import FAISS
+from langchain.prompts import PromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.chains import RetrievalQA
 import streamlit as st
-import requests
-from bs4 import BeautifulSoup
-import re
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+import os
+from dotenv import load_dotenv
+import tempfile
 
-GEMINI_API_KEY = "AIzaSyBx38MG0txhX7iGM8jGgxsQ0av-xJlakLg"
+load_dotenv()
+os.environ["api_key"] = "AIzaSyBx38MG0txhX7iGM8jGgxsQ0av-xJlakLg"
+api_keys = os.environ["api_key"]
+if "doc_loaded" not in st.session_state:
+    st.session_state.doc_loaded = False
+if "retriever" not in st.session_state:
+    st.session_state.retriever = None
+st.title("BLOG APP")
 
-GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent"
+option = st.selectbox("Choose input type", ["Web URL", "PDF File", "CSV File"])
 
-def get_text_from_url(url):
-    try:
-        response = requests.get(url)
-        soup = BeautifulSoup(response.text, "html.parser")
-        paragraphs = soup.find_all("p")
-        return "\n".join([para.get_text() for para in paragraphs])
-    except Exception as e:
-        return f"Error fetching content: {e}"
+url = None
+pdf_file = None
+csv_file = None
 
+if option == "Web URL":
+    url = st.text_input("Enter URL")
+elif option == "PDF File":
+    pdf_file = st.file_uploader("Upload PDF", type=["pdf"])
+elif option == "CSV File":
+    csv_file = st.file_uploader("Upload CSV", type=["csv"])
 
-def split_into_sentences(text):
-    return re.split(r'(?<=[.!?])\s+', text.strip())
-
-def retrieve_relevant_context(sentences, question, top_n=5):
-    vectorizer = TfidfVectorizer().fit(sentences + [question])
-    vectors = vectorizer.transform(sentences + [question])
-    similarity = cosine_similarity(vectors[-1], vectors[:-1]).flatten()
-    top_indices = similarity.argsort()[-top_n:][::-1]
-    return " ".join([sentences[i] for i in top_indices])
-
-def generate_answer(context, question):
-    headers = {
-        "Content-Type": "application/json",
-        "X-goog-api-key": GEMINI_API_KEY
-    }
-    prompt = f"Answer the question using the context below:\n\nContext: {context}\n\nQuestion: {question}"
-    payload = {
-        "contents": [
-            {
-                "parts": [{"text": prompt}]
-            }
-        ]
-    }
-    response = requests.post(GEMINI_URL, headers=headers, json=payload)
-    if response.status_code == 200:
+if st.button("Load Document"):
+    with st.spinner("Loading document..."):
         try:
-            return response.json()["candidates"][0]["content"]["parts"][0]["text"]
-        except:
-            return "Gemini response format error."
-    else:
-        return f"Error: {response.status_code} - {response.text}"
+            if option == "Web URL" and url:
+                loader = WebBaseLoader(url)
+                data = loader.load()
 
-st.title(" Blog Q&A ")
+            elif option == "PDF File" and pdf_file:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    tmp_file.write(pdf_file.read())
+                    tmp_path = tmp_file.name
+                loader = PyPDFLoader(tmp_path)
+                data = loader.load()
+                os.remove(tmp_path)  
 
-blog_url = st.text_input("Enter Blog URL")
-question = st.text_input("Ask a Question")
-
-if st.button("Get Answer"):
-    if blog_url and question:
-        with st.spinner("Fetching and analyzing blog..."):
-            text = get_text_from_url(blog_url)
-            if "Error" in text:
-                st.error(text)
+            elif option == "CSV File" and csv_file:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp_file:
+                    tmp_file.write(csv_file.read())
+                    tmp_path = tmp_file.name
+                loader = CSVLoader(file_path=tmp_path)
+                data = loader.load()
+                os.remove(tmp_path) 
             else:
-                sentences = split_into_sentences(text)
-                context = retrieve_relevant_context(sentences, question)
-                answer = generate_answer(context, question)
-                st.markdown("### ✅ Answer")
+                st.warning("not a valid input")
+                st.stop()
+
+            splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+            split_docs = splitter.split_documents(data)
+
+            embed = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+            store = FAISS.from_documents(split_docs, embed)
+            st.session_state.retriever = store.as_retriever()
+            st.session_state.doc_loaded = True
+            st.success("document uploads sucessfully")
+
+        except Exception as e:
+            st.error(f"Error loading document {e}")
+            st.session_state.doc_loaded = False
+            st.session_state.retriever = None
+
+if st.session_state.doc_loaded:
+    question = st.text_input("Write your question")
+    if st.button("get answer") and question:
+        with st.spinner("getting answer"):
+            try:
+                prompt_template = PromptTemplate(
+                    template="""
+                     Help me to answer the question based on the blog:
+
+                     Context: {context}
+                     Question: {question}
+                    """,
+                    input_variables=["question", "context"]
+                )
+
+                llm = ChatGoogleGenerativeAI(
+                    model="gemini-1.5-flash",
+                    api_key=api_keys
+                )
+
+                chain = RetrievalQA.from_chain_type(
+                    llm=llm,
+                    chain_type="stuff",
+                    retriever=st.session_state.retriever,
+                    chain_type_kwargs={"prompt": prompt_template},
+                )
+
+                answer = chain.run(question)
                 st.success(answer)
-    else:
-        st.warning("Please enter both a URL and a question.")
+            except Exception as e:
+                st.error(f"Error generating answer: {e}")
